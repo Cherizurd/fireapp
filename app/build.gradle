@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.elevenreader.tv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'io.elevenreader.tv'
+        minSdk 22
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        // Debug-style signing so the APK installs directly via Downloader / adb.
+        release {
+            storeFile file('../release.keystore')
+            storePassword 'elevenreader'
+            keyAlias 'elevenreader'
+            keyPassword 'elevenreader'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
