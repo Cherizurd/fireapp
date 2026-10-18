@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -27,6 +29,9 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -45,6 +50,8 @@ public class MainActivity extends Activity {
     private WebView mainWebView;
     private final List<WebView> popups = new ArrayList<>();
     private CursorView cursor;
+    private MediaSession mediaSession;
+    private String mediaBridgeJs = "";
     private boolean cursorMode = true;
     private long lastBackPress;
     private float density;
@@ -61,6 +68,8 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         density = getResources().getDisplayMetrics().density;
+        mediaBridgeJs = readAsset("media-bridge.js");
+        setUpMediaSession();
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -130,6 +139,16 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                injectMediaBridge(view);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                injectMediaBridge(view);
+            }
+
+            @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) {
                     showErrorPage(view, String.valueOf(error.getDescription()));
@@ -138,6 +157,12 @@ public class MainActivity extends Activity {
         });
 
         wv.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                // Get the media hooks in as early in page load as possible; the bridge ignores repeat injections.
+                injectMediaBridge(view);
+            }
+
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
                 // Sign-in flows (Google/Apple) open popups; show them as a full-screen layer above the page.
@@ -225,17 +250,20 @@ public class MainActivity extends Activity {
             case KeyEvent.KEYCODE_MEDIA_PLAY:
             case KeyEvent.KEYCODE_MEDIA_PAUSE:
                 if (down && event.getRepeatCount() == 0) {
-                    runMediaScript("m.paused ? m.play() : m.pause();");
+                    mediaCommand(code == KeyEvent.KEYCODE_MEDIA_PLAY ? "play"
+                            : code == KeyEvent.KEYCODE_MEDIA_PAUSE ? "pause" : "toggle");
                 }
                 return true;
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
                 if (down) {
-                    runMediaScript("m.currentTime = Math.min(m.duration || 1e9, m.currentTime + 15);");
+                    mediaCommand("forward");
                 }
                 return true;
             case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
                 if (down) {
-                    runMediaScript("m.currentTime = Math.max(0, m.currentTime - 15);");
+                    mediaCommand("back");
                 }
                 return true;
             default:
@@ -384,12 +412,88 @@ public class MainActivity extends Activity {
         wv.evaluateJavascript(js, null);
     }
 
-    private void runMediaScript(String action) {
-        String js = "(function(){var all=Array.prototype.slice.call(document.querySelectorAll('audio,video'));"
-                + "if(!all.length)return;"
-                + "var m=all.filter(function(e){return !e.paused;})[0]||all[0];"
-                + action + "})();";
-        activeWebView().evaluateJavascript(js, null);
+    // ---- Media controls ----
+
+    private void injectMediaBridge(WebView view) {
+        if (!mediaBridgeJs.isEmpty()) {
+            view.evaluateJavascript(mediaBridgeJs, null);
+        }
+    }
+
+    /** Runs a play/pause/seek command through media-bridge.js in the visible page. */
+    private void mediaCommand(String command) {
+        String js = mediaBridgeJs + "\n;(window.__tvMedia ? window.__tvMedia.command('" + command + "') : 'none');";
+        activeWebView().evaluateJavascript(js, new android.webkit.ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String result) {
+                if (result == null || result.contains("none")) {
+                    Toast.makeText(MainActivity.this,
+                            "No audio player found. Start the audio on screen once, then the remote will work.",
+                            Toast.LENGTH_LONG).show();
+                } else if (result.contains("error")) {
+                    Toast.makeText(MainActivity.this, "Couldn't control audio: " + result, Toast.LENGTH_LONG).show();
+                }
+            }
+        });
+    }
+
+    /** Registers the app as a media player so the system always routes the remote's media buttons here. */
+    @SuppressWarnings("deprecation")
+    private void setUpMediaSession() {
+        mediaSession = new MediaSession(this, "ElevenReaderTV");
+        mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        mediaSession.setCallback(new MediaSession.Callback() {
+            @Override
+            public void onPlay() {
+                mediaCommand("play");
+            }
+
+            @Override
+            public void onPause() {
+                mediaCommand("pause");
+            }
+
+            @Override
+            public void onFastForward() {
+                mediaCommand("forward");
+            }
+
+            @Override
+            public void onSkipToNext() {
+                mediaCommand("forward");
+            }
+
+            @Override
+            public void onRewind() {
+                mediaCommand("back");
+            }
+
+            @Override
+            public void onSkipToPrevious() {
+                mediaCommand("back");
+            }
+        });
+        mediaSession.setPlaybackState(new PlaybackState.Builder()
+                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
+                        | PlaybackState.ACTION_FAST_FORWARD | PlaybackState.ACTION_REWIND
+                        | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                .setState(PlaybackState.STATE_PAUSED, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
+                .build());
+        mediaSession.setActive(true);
+    }
+
+    private String readAsset(String name) {
+        try (InputStream in = getAssets().open(name)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+            return out.toString("UTF-8");
+        } catch (IOException e) {
+            return "";
+        }
     }
 
     // ---- Lifecycle ----
@@ -410,6 +514,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        mediaSession.release();
         for (WebView popup : new ArrayList<>(popups)) {
             closePopup(popup);
         }

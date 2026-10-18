@@ -12,9 +12,10 @@ with an on-screen pointer you drive with the Fire TV remote.
 | Back | Go back a page; press twice on the first page to exit |
 | Menu (☰) | Toggle pointer mode / plain D-pad mode |
 | Play/Pause | Play or pause the current audio |
-| Rewind / Fast-forward | Skip back / forward 15 seconds |
+| Rewind / Fast-forward (or Previous / Next) | Skip back / forward 15 seconds |
 
-Audio keeps playing when the screensaver comes on.
+Audio keeps playing when the screensaver comes on. The media buttons work through the site's own player
+controls (`app/src/main/assets/media-bridge.js`); if nothing is loaded yet, start a book on screen once.
 
 ## Building
 
